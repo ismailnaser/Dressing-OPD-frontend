@@ -35,6 +35,7 @@ import { createUser, deleteUser, listUsers, updateUser, type AdminUserRow } from
 import { PatientAuditDetails } from "@/lib/patientAuditDetails";
 import { isDoctorRole, isSectionAdmin } from "@/lib/roleRouting";
 import { exportStyledExcel } from "@/lib/excelExport";
+import { flushPendingList } from "@/lib/pendingSync";
 
 function todayYmd() {
   const d = new Date();
@@ -499,22 +500,20 @@ export default function Home() {
     const items = readPending();
     if (items.length === 0) return;
 
-    const remaining: PendingCreate[] = [];
-    for (const item of items) {
-      try {
-        await createPatient(item.payload);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "";
-        if (msg.includes("already registered today")) {
-          continue;
-        }
-        remaining.push(item);
-      }
-    }
+    const { remaining, syncedCount } = await flushPendingList(items, (item) => ({
+      id_no: item.payload.id_no,
+      sex: item.payload.sex,
+      age: item.payload.age,
+      room: item.payload.room,
+      ww: item.payload.ww,
+      lab: item.payload.lab,
+      burn: item.payload.burn,
+      notes: item.payload.notes || null,
+    }));
     writePending(remaining);
     setPendingCount(remaining.length);
     await refresh();
-    if (items.length !== remaining.length) {
+    if (syncedCount > 0) {
       showToast("success", "Pending patients synced successfully.");
     }
   }
@@ -609,11 +608,13 @@ export default function Home() {
         burn: form.burn,
         notes: form.notes.trim(),
       };
+      const requestId = crypto.randomUUID();
+      const recordedAt = new Date().toISOString();
 
       if (typeof window !== "undefined" && !navigator.onLine) {
         const next: PendingCreate[] = [
           ...readPending(),
-          { id: crypto.randomUUID(), payload, created_at: new Date().toISOString() },
+          { id: requestId, payload, created_at: recordedAt },
         ];
         writePending(next);
         setPendingCount(next.length);
@@ -641,13 +642,15 @@ export default function Home() {
           lab: payload.lab,
           burn: payload.burn,
           notes: payload.notes || null,
+          client_request_id: requestId,
+          recorded_at: recordedAt,
         });
       } catch (e) {
         // Network failure → queue for later
         if (e instanceof TypeError || !navigator.onLine) {
           const next: PendingCreate[] = [
             ...readPending(),
-            { id: crypto.randomUUID(), payload, created_at: new Date().toISOString() },
+            { id: requestId, payload, created_at: recordedAt },
           ];
           writePending(next);
           setPendingCount(next.length);

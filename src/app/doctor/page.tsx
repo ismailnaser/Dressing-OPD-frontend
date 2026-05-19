@@ -17,6 +17,7 @@ import {
 import { createUser, deleteUser, listUsers, updateUser, type AdminUserRow } from "@/lib/usersApi";
 import { isDoctorRole, isSectionAdmin } from "@/lib/roleRouting";
 import { exportStyledExcel } from "@/lib/excelExport";
+import { flushPendingList } from "@/lib/pendingSync";
 import { Download, LogOut, Moon, Plus, Shield, Sun } from "lucide-react";
 
 type Disposition = "discharged" | "admitted" | "referred_ed" | "referred_out";
@@ -584,19 +585,13 @@ export default function DoctorPage() {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
     const items = readDoctorPending();
     if (items.length === 0) return;
-    const remaining: PendingDoctorCreate[] = [];
-    for (const it of items) {
-      try {
-        const apiPayload = buildApiPayloadFromPendingPayload(it.payload);
-        await createPatient(apiPayload);
-      } catch {
-        remaining.push(it);
-      }
-    }
+    const { remaining, syncedCount } = await flushPendingList(items, (it) =>
+      buildApiPayloadFromPendingPayload(it.payload)
+    );
     writeDoctorPending(remaining);
     setPendingCount(remaining.length);
     setPendingItems(remaining);
-    if (remaining.length !== items.length) {
+    if (syncedCount > 0) {
       await refreshToday();
       if (!opts?.quiet) {
         setToast("Pending doctor patients synced.");
@@ -799,6 +794,8 @@ export default function DoctorPage() {
     scrollToTop();
     setError(null);
     setSaving(true);
+    const requestId = crypto.randomUUID();
+    const recordedAt = new Date().toISOString();
     try {
       const { apiPayload, pendingPayload } = buildDoctorPayloadFromForm();
       if (editingPatientId) {
@@ -807,7 +804,7 @@ export default function DoctorPage() {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
           const next: PendingDoctorCreate[] = [
             ...readDoctorPending(),
-            { id: crypto.randomUUID(), payload: pendingPayload, created_at: new Date().toISOString() },
+            { id: requestId, payload: pendingPayload, created_at: recordedAt },
           ];
           writeDoctorPending(next);
           setPendingCount(next.length);
@@ -816,7 +813,11 @@ export default function DoctorPage() {
           requestAnimationFrame(scrollToTop);
           return;
         }
-        await createPatient(apiPayload);
+        await createPatient({
+          ...apiPayload,
+          client_request_id: requestId,
+          recorded_at: recordedAt,
+        });
       }
       resetForm();
       setToast(editingPatientId ? "Updated successfully." : "Saved successfully.");
@@ -828,7 +829,7 @@ export default function DoctorPage() {
           const { pendingPayload } = buildDoctorPayloadFromForm();
           const next: PendingDoctorCreate[] = [
             ...readDoctorPending(),
-            { id: crypto.randomUUID(), payload: pendingPayload, created_at: new Date().toISOString() },
+            { id: requestId, payload: pendingPayload, created_at: recordedAt },
           ];
           writeDoctorPending(next);
           setPendingCount(next.length);

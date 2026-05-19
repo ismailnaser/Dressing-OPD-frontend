@@ -64,6 +64,10 @@ export async function createPatient(input: {
   lab?: boolean;
   burn?: boolean;
   notes?: string | null;
+  /** Same UUID as the pending row — safe retries after a lost HTTP response. */
+  client_request_id?: string;
+  /** When the case was recorded offline (ISO); used for same-day duplicate checks. */
+  recorded_at?: string;
 }) {
   const res = await apiFetch(`${API_BASE_URL}/patients`, {
     method: "POST",
@@ -77,8 +81,22 @@ export async function createPatient(input: {
       lab: input.lab ?? false,
       burn: input.burn ?? false,
       notes: input.notes?.trim() ? input.notes.trim() : null,
+      client_request_id: input.client_request_id ?? null,
+      recorded_at: input.recorded_at ?? null,
     }),
   });
+  if (res.status === 409) {
+    const text = await res.text().catch(() => "");
+    try {
+      const j = JSON.parse(text) as { data?: Patient; message?: string };
+      if (j?.data && typeof j.data === "object" && "id" in j.data) {
+        return j.data;
+      }
+    } catch {
+      /* fall through */
+    }
+    throw new Error(errorMessageFromResponseBody(text, `Request failed (${res.status})`));
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(errorMessageFromResponseBody(text, `Request failed (${res.status})`));
