@@ -187,6 +187,13 @@ function todayYmd() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+function recordedAtIsoFromYmd(ymd: string): string {
+  const today = todayYmd();
+  const safe = /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : today;
+  if (safe >= today) return new Date().toISOString();
+  return `${safe}T12:00:00.000Z`;
+}
+
 function ymdFromDate(dt: Date) {
   return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
 }
@@ -287,6 +294,7 @@ export default function DoctorPage() {
   const [patientId, setPatientId] = useState("");
   const [sex, setSex] = useState<Sex | "">("");
   const [ageRange, setAgeRange] = useState<AgeRange | "">("");
+  const [caseDate, setCaseDate] = useState(todayYmd());
   const [keypadTarget, setKeypadTarget] = useState<"patientId">("patientId");
   const [selectedDx, setSelectedDx] = useState<number[]>([]);
   const [ageSubtype, setAgeSubtype] = useState<AgeSubtype>("");
@@ -351,6 +359,7 @@ export default function DoctorPage() {
     setWw(false);
     setDisposition("discharged");
     setEditingPatientId(null);
+    setCaseDate(todayYmd());
   }
 
   function ageToRange(age: number): AgeRange {
@@ -771,7 +780,7 @@ export default function DoctorPage() {
       const { pendingPayload } = buildDoctorPayloadFromForm();
       const next: PendingDoctorCreate[] = [
         ...readDoctorPending(),
-        { id: crypto.randomUUID(), payload: pendingPayload, created_at: new Date().toISOString() },
+        { id: crypto.randomUUID(), payload: pendingPayload, created_at: recordedAtIsoFromYmd(caseDate) },
       ];
       writeDoctorPending(next);
       setPendingCount(next.length);
@@ -795,7 +804,7 @@ export default function DoctorPage() {
     setError(null);
     setSaving(true);
     const requestId = crypto.randomUUID();
-    const recordedAt = new Date().toISOString();
+    const recordedAt = recordedAtIsoFromYmd(caseDate);
     try {
       const { apiPayload, pendingPayload } = buildDoctorPayloadFromForm();
       if (editingPatientId) {
@@ -1308,6 +1317,18 @@ export default function DoctorPage() {
             ) : null}
             {error ? <div className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-100">{error}</div> : null}
             {toast ? <div className="mb-3 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-100">{toast}</div> : null}
+
+            <div className="mb-3">
+              <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Case date</label>
+              <input
+                type="date"
+                value={caseDate}
+                max={todayYmd()}
+                onChange={(e) => setCaseDate(e.target.value || todayYmd())}
+                className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950 sm:max-w-xs"
+                title="Case date"
+              />
+            </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div>

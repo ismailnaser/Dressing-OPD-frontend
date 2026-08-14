@@ -30,7 +30,8 @@ function todayYmdLocal() {
 }
 
 export function isAlreadyRegisteredTodayError(message: string): boolean {
-  return message.toLowerCase().includes("already registered today");
+  const m = message.toLowerCase();
+  return m.includes("already registered today") || m.includes("already registered on this date");
 }
 
 /** True if this ID already exists on the server for the pending row's calendar day. */

@@ -43,6 +43,13 @@ function todayYmd() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function recordedAtIsoFromYmd(ymd: string): string {
+  const today = todayYmd();
+  const safe = /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : today;
+  if (safe >= today) return new Date().toISOString();
+  return `${safe}T12:00:00.000Z`;
+}
+
 function addDaysYmd(baseYmd: string, deltaDays: number) {
   const [y, m, d] = baseYmd.split("-").map(Number);
   const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
@@ -182,9 +189,8 @@ function writePending(items: PendingCreate[]) {
   localStorage.setItem(PENDING_KEY, JSON.stringify(items));
 }
 
-/** Same calendar day as today (local), same trimmed id — blocks duplicate offline rows. */
-function pendingHasSameIdToday(idNo: string): boolean {
-  const day = todayYmd();
+/** Same calendar day (local), same trimmed id — blocks duplicate offline rows. */
+function pendingHasSameIdOnDay(idNo: string, dayYmd: string): boolean {
   const target = idNo.trim();
   for (const p of readPending()) {
     if (p.payload.id_no.trim() !== target) continue;
@@ -193,7 +199,7 @@ function pendingHasSameIdToday(idNo: string): boolean {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
-    if (`${y}-${m}-${dd}` === day) return true;
+    if (`${y}-${m}-${dd}` === dayYmd) return true;
   }
   return false;
 }
@@ -238,7 +244,7 @@ export default function Home() {
 
   const [form, setForm] = useState({
     id_no: "",
-    sex: "M" as Sex,
+    sex: "" as Sex | "",
     age: "",
     room: "room1" as "room1" | "room2",
     ww: false,
@@ -246,6 +252,8 @@ export default function Home() {
     burn: false,
     notes: "",
   });
+  const [caseDate, setCaseDate] = useState(todayYmd());
+  const [keypadTarget, setKeypadTarget] = useState<"id_no" | "age">("id_no");
 
   const [idSearch, setIdSearch] = useState("");
   const [dateRange, setDateRange] = useState<{ from_date: string; to_date: string }>({
@@ -334,6 +342,43 @@ export default function Home() {
     setTableNotice(message);
     if (tableNoticeTimerRef.current) window.clearTimeout(tableNoticeTimerRef.current);
     tableNoticeTimerRef.current = window.setTimeout(() => setTableNotice(null), 2200);
+  }
+
+  function resetAddForm() {
+    setForm({
+      id_no: "",
+      sex: "",
+      age: "",
+      room: "room1",
+      ww: false,
+      lab: false,
+      burn: false,
+      notes: "",
+    });
+    setCaseDate(todayYmd());
+    setKeypadTarget("id_no");
+  }
+
+  function applyKeypadInput(value: string) {
+    const apply = (current: string, setter: (next: string) => void, maxLen: number) => {
+      if (value === "CLR") {
+        setter("");
+        return;
+      }
+      if (value === "⌫") {
+        setter(current.slice(0, -1));
+        return;
+      }
+      const next = `${current}${value}`;
+      if (next.length > maxLen) return;
+      setter(next);
+    };
+
+    if (keypadTarget === "age") {
+      apply(form.age, (next) => setForm((p) => ({ ...p, age: next })), 3);
+    } else {
+      apply(form.id_no, (next) => setForm((p) => ({ ...p, id_no: next })), 50);
+    }
   }
 
   useEffect(() => {
@@ -571,16 +616,21 @@ export default function Home() {
         return;
       }
 
-      if (pendingHasSameIdToday(idNo)) {
-        showToast("error", "This ID is already saved for today (pending offline list).");
+      if (form.sex !== "M" && form.sex !== "F") {
+        showToast("error", "Please select gender.");
+        return;
+      }
+
+      if (pendingHasSameIdOnDay(idNo, caseDate)) {
+        showToast("error", "This ID is already saved for this date (pending offline list).");
         return;
       }
 
       if (typeof navigator !== "undefined" && navigator.onLine) {
         try {
-          const dupToday = await listPatients({ id_no_exact: idNo, date: todayYmd() });
-          if (dupToday.length > 0) {
-            showToast("error", "This ID number is already registered today.");
+          const dupOnDay = await listPatients({ id_no_exact: idNo, date: caseDate });
+          if (dupOnDay.length > 0) {
+            showToast("error", "This ID number is already registered on this date.");
             return;
           }
         } catch {
@@ -600,7 +650,7 @@ export default function Home() {
       }
       const payload = {
         id_no: idNo,
-        sex: form.sex,
+        sex: form.sex as Sex,
         age: ageNum,
         room: form.room,
         ww: form.ww,
@@ -609,7 +659,7 @@ export default function Home() {
         notes: form.notes.trim(),
       };
       const requestId = crypto.randomUUID();
-      const recordedAt = new Date().toISOString();
+      const recordedAt = recordedAtIsoFromYmd(caseDate);
 
       if (typeof window !== "undefined" && !navigator.onLine) {
         const next: PendingCreate[] = [
@@ -618,16 +668,7 @@ export default function Home() {
         ];
         writePending(next);
         setPendingCount(next.length);
-        setForm((p) => ({
-          ...p,
-          id_no: "",
-          age: "",
-          room: "room1",
-          ww: false,
-          lab: false,
-          burn: false,
-          notes: "",
-        }));
+        resetAddForm();
         showToast("success", "Saved offline. Will sync when online.");
         return;
       }
@@ -654,31 +695,13 @@ export default function Home() {
           ];
           writePending(next);
           setPendingCount(next.length);
-          setForm((p) => ({
-            ...p,
-            id_no: "",
-            age: "",
-            room: "room1",
-            ww: false,
-            lab: false,
-            burn: false,
-            notes: "",
-          }));
+          resetAddForm();
           showToast("success", "Saved offline. Will sync when online.");
           return;
         }
         throw e;
       }
-      setForm((p) => ({
-        ...p,
-        id_no: "",
-        age: "",
-        room: "room1",
-        ww: false,
-        lab: false,
-        burn: false,
-        notes: "",
-      }));
+      resetAddForm();
       await refresh();
       showToast("success", "Patient saved successfully.");
     } catch (err) {
@@ -2088,16 +2111,36 @@ export default function Home() {
                 Add Patient
               </div>
               <form onSubmit={onSubmit} className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  <div className="col-span-2 sm:col-span-1">
+                <div>
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Case date
+                  </label>
+                  <input
+                    type="date"
+                    value={caseDate}
+                    max={todayYmd()}
+                    onChange={(e) => setCaseDate(e.target.value || todayYmd())}
+                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
+                    title="Case date"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
                     <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
                       ID NO
                     </label>
                     <input
                       value={form.id_no}
+                      onFocus={() => setKeypadTarget("id_no")}
                       onChange={(e) => setForm((p) => ({ ...p, id_no: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
+                      className={`mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
+                        keypadTarget === "id_no"
+                          ? "border-slate-500 dark:border-slate-500"
+                          : "border-zinc-200 focus:border-zinc-400 dark:border-zinc-800 dark:focus:border-zinc-600"
+                      }`}
                       placeholder="ID NO"
+                      inputMode="numeric"
                       required
                     />
                   </div>
@@ -2107,76 +2150,109 @@ export default function Home() {
                     </label>
                     <input
                       value={form.age}
+                      onFocus={() => setKeypadTarget("age")}
                       onChange={(e) => setForm((p) => ({ ...p, age: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
+                      className={`mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
+                        keypadTarget === "age"
+                          ? "border-slate-500 dark:border-slate-500"
+                          : "border-zinc-200 focus:border-zinc-400 dark:border-zinc-800 dark:focus:border-zinc-600"
+                      }`}
                       placeholder="Age"
                       inputMode="numeric"
                       required
                     />
                   </div>
-                  <div>
-                    <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                      Sex
-                    </label>
-                    <select
-                      value={form.sex}
-                      onChange={(e) => setForm((p) => ({ ...p, sex: e.target.value as Sex }))}
-                      className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
-                      title="Sex"
+                </div>
+
+                <div className="grid grid-cols-3 gap-1">
+                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", "CLR", "0", "⌫"].map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => applyKeypadInput(k)}
+                      className="min-h-11 rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-semibold dark:border-zinc-800 dark:bg-zinc-950"
                     >
-                      <option value="M">M</option>
-                      <option value="F">F</option>
-                    </select>
-                  </div>
-                  <div className="col-span-2 sm:col-span-1">
-                    <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                      Room
-                    </label>
-                    <select
-                      value={form.room}
-                      onChange={(e) => setForm((p) => ({ ...p, room: e.target.value as "room1" | "room2" }))}
-                      className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
-                      title="Room"
-                    >
-                      <option value="room1">room1</option>
-                      <option value="room2">room2</option>
-                    </select>
+                      {k}
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Gender</label>
+                  <div className="mt-1 grid grid-cols-2 gap-1">
+                    {[
+                      { id: "M" as const, label: "Male" },
+                      { id: "F" as const, label: "Female" },
+                    ].map((opt) => {
+                      const selected = form.sex === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setForm((p) => ({ ...p, sex: opt.id }))}
+                          className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                            selected
+                              ? "border-slate-600 bg-slate-600 text-white"
+                              : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-1">
-                  <input
-                    id="form-ww"
-                    type="checkbox"
-                    checked={form.ww}
-                    onChange={(e) => setForm((p) => ({ ...p, ww: e.target.checked }))}
-                    className="h-4 w-4 rounded border-zinc-300 text-slate-600 focus:ring-slate-500 dark:border-zinc-600 dark:bg-zinc-950"
-                  />
-                  <label htmlFor="form-ww" className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
-                    WW
-                  </label>
+                <div>
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Room</label>
+                  <div className="mt-1 grid grid-cols-2 gap-1">
+                    {[
+                      { id: "room1" as const, label: "Room 1" },
+                      { id: "room2" as const, label: "Room 2" },
+                    ].map((opt) => {
+                      const selected = form.room === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setForm((p) => ({ ...p, room: opt.id }))}
+                          className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                            selected
+                              ? "border-slate-600 bg-slate-600 text-white"
+                              : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
-                  <input
-                    id="form-lab"
-                    type="checkbox"
-                    checked={form.lab}
-                    onChange={(e) => setForm((p) => ({ ...p, lab: e.target.checked }))}
-                    className="ml-3 h-4 w-4 rounded border-zinc-300 text-slate-600 focus:ring-slate-500 dark:border-zinc-600 dark:bg-zinc-950"
-                  />
-                  <label htmlFor="form-lab" className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
-                    Lab
-                  </label>
-
-                  <input
-                    id="form-burn"
-                    type="checkbox"
-                    checked={form.burn}
-                    onChange={(e) => setForm((p) => ({ ...p, burn: e.target.checked }))}
-                    className="ml-3 h-4 w-4 rounded border-zinc-300 text-slate-600 focus:ring-slate-500 dark:border-zinc-600 dark:bg-zinc-950"
-                  />
-                  <label htmlFor="form-burn" className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
-                    Burn
-                  </label>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      { key: "ww" as const, label: "WW" },
+                      { key: "lab" as const, label: "Lab" },
+                      { key: "burn" as const, label: "Burn" },
+                    ] as const
+                  ).map((opt) => {
+                    const selected = form[opt.key];
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => setForm((p) => ({ ...p, [opt.key]: !p[opt.key] }))}
+                        className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                          selected
+                            ? "border-slate-600 bg-slate-600 text-white"
+                            : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <div>
