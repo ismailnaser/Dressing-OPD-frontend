@@ -2132,15 +2132,20 @@ export default function Home() {
                     </label>
                     <input
                       value={form.id_no}
+                      readOnly
+                      inputMode="none"
+                      autoComplete="off"
                       onFocus={() => setKeypadTarget("id_no")}
-                      onChange={(e) => setForm((p) => ({ ...p, id_no: e.target.value }))}
-                      className={`mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
+                      onTouchStart={(e) => {
+                        e.preventDefault();
+                        setKeypadTarget("id_no");
+                      }}
+                      className={`mt-1 w-full cursor-pointer rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
                         keypadTarget === "id_no"
                           ? "border-slate-500 dark:border-slate-500"
-                          : "border-zinc-200 focus:border-zinc-400 dark:border-zinc-800 dark:focus:border-zinc-600"
+                          : "border-zinc-200 dark:border-zinc-800"
                       }`}
                       placeholder="ID NO"
-                      inputMode="numeric"
                       required
                     />
                   </div>
@@ -2150,15 +2155,20 @@ export default function Home() {
                     </label>
                     <input
                       value={form.age}
+                      readOnly
+                      inputMode="none"
+                      autoComplete="off"
                       onFocus={() => setKeypadTarget("age")}
-                      onChange={(e) => setForm((p) => ({ ...p, age: e.target.value }))}
-                      className={`mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
+                      onTouchStart={(e) => {
+                        e.preventDefault();
+                        setKeypadTarget("age");
+                      }}
+                      className={`mt-1 w-full cursor-pointer rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
                         keypadTarget === "age"
                           ? "border-slate-500 dark:border-slate-500"
-                          : "border-zinc-200 focus:border-zinc-400 dark:border-zinc-800 dark:focus:border-zinc-600"
+                          : "border-zinc-200 dark:border-zinc-800"
                       }`}
                       placeholder="Age"
-                      inputMode="numeric"
                       required
                     />
                   </div>
