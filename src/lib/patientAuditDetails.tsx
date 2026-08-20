@@ -44,9 +44,17 @@ function fmtIdNo(v: unknown): string {
 }
 
 function fmtAge(v: unknown): string {
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return String(Number(v));
-  return "—";
+  const n =
+    typeof v === "number" && Number.isFinite(v)
+      ? v
+      : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))
+        ? Number(v)
+        : null;
+  if (n === null) return "—";
+  if (n <= 4) return "<5";
+  if (n <= 14) return "5-14";
+  if (n <= 17) return "15-17";
+  return ">=18";
 }
 
 function fmtRoom(v: unknown): string {

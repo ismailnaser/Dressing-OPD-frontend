@@ -3,11 +3,11 @@ import { setAuthToken, type AuthUser } from "./auth";
 import { apiFetch } from "./http";
 import { humanizeApiErrorText } from "./apiErrors";
 
-export async function login(username: string, password: string) {
+export async function login(username: string, password: string, rememberMe = false) {
   const res = await fetch(`${API_BASE_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, remember_me: rememberMe }),
   });
 
   if (!res.ok) {
@@ -16,7 +16,7 @@ export async function login(username: string, password: string) {
   }
 
   const json = (await res.json()) as { token: string; user: AuthUser };
-  setAuthToken(json.token);
+  setAuthToken(json.token, { persist: rememberMe });
   return json.user;
 }
 

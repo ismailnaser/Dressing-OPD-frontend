@@ -3,6 +3,7 @@
 import { PwaClient } from "@/components/PwaClient";
 import {
   Ban,
+  Camera,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -35,7 +36,16 @@ import { createUser, deleteUser, listUsers, updateUser, type AdminUserRow } from
 import { PatientAuditDetails } from "@/lib/patientAuditDetails";
 import { isDoctorRole, isSectionAdmin } from "@/lib/roleRouting";
 import { exportStyledExcel } from "@/lib/excelExport";
-import { flushPendingList } from "@/lib/pendingSync";
+import { flushPendingList, isAlreadyRegisteredTodayError } from "@/lib/pendingSync";
+import {
+  AGE_RANGE_OPTIONS,
+  ageRangeLabel,
+  ageToRange,
+  rangeToAge,
+  resolveAgeForSave,
+  type AgeRange,
+} from "@/lib/ageRange";
+import { ScanLogSheet } from "@/components/ScanLogSheet";
 
 function todayYmd() {
   const d = new Date();
@@ -108,6 +118,36 @@ function completeYmdRange(range: { from_date: string; to_date: string }) {
   if (from && !to) return normalizeYmdRange({ from_date: from, to_date: from });
   if (!from && to) return normalizeYmdRange({ from_date: to, to_date: to });
   return normalizeYmdRange({ from_date: from, to_date: to });
+}
+
+function AgeRangeButtons({
+  value,
+  onChange,
+}: {
+  value: AgeRange | "";
+  onChange: (next: AgeRange) => void;
+}) {
+  return (
+    <div className="mt-1 grid grid-cols-4 gap-1">
+      {AGE_RANGE_OPTIONS.map((opt) => {
+        const selected = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => onChange(opt.id)}
+            className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+              selected
+                ? "border-slate-600 bg-slate-600 text-white"
+                : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+            }`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 type PendingCreate = {
@@ -230,7 +270,8 @@ export default function Home() {
     id: number;
     id_no: string;
     sex: Sex;
-    age: string;
+    ageRange: AgeRange;
+    originalAge: number;
     room: "room1" | "room2";
     ww: boolean;
     lab: boolean;
@@ -244,8 +285,8 @@ export default function Home() {
 
   const [form, setForm] = useState({
     id_no: "",
-    sex: "" as Sex | "",
-    age: "",
+    sex: "M" as Sex,
+    ageRange: "" as AgeRange | "",
     room: "room1" as "room1" | "room2",
     ww: false,
     lab: false,
@@ -253,7 +294,7 @@ export default function Home() {
     notes: "",
   });
   const [caseDate, setCaseDate] = useState(todayYmd());
-  const [keypadTarget, setKeypadTarget] = useState<"id_no" | "age">("id_no");
+  const [entryMode, setEntryMode] = useState<"manual" | "scan">("manual");
 
   const [idSearch, setIdSearch] = useState("");
   const [dateRange, setDateRange] = useState<{ from_date: string; to_date: string }>({
@@ -280,7 +321,8 @@ export default function Home() {
     id: string;
     id_no: string;
     sex: Sex;
-    age: string;
+    ageRange: AgeRange;
+    originalAge: number;
     room: "room1" | "room2";
     ww: boolean;
     lab: boolean;
@@ -347,8 +389,8 @@ export default function Home() {
   function resetAddForm() {
     setForm({
       id_no: "",
-      sex: "",
-      age: "",
+      sex: "M",
+      ageRange: "",
       room: "room1",
       ww: false,
       lab: false,
@@ -356,29 +398,22 @@ export default function Home() {
       notes: "",
     });
     setCaseDate(todayYmd());
-    setKeypadTarget("id_no");
   }
 
   function applyKeypadInput(value: string) {
-    const apply = (current: string, setter: (next: string) => void, maxLen: number) => {
-      if (value === "CLR") {
-        setter("");
-        return;
-      }
-      if (value === "⌫") {
-        setter(current.slice(0, -1));
-        return;
-      }
-      const next = `${current}${value}`;
-      if (next.length > maxLen) return;
-      setter(next);
-    };
-
-    if (keypadTarget === "age") {
-      apply(form.age, (next) => setForm((p) => ({ ...p, age: next })), 3);
-    } else {
-      apply(form.id_no, (next) => setForm((p) => ({ ...p, id_no: next })), 50);
+    if (value === "CLR") {
+      setForm((p) => ({ ...p, id_no: "" }));
+      return;
     }
+    if (value === "⌫") {
+      setForm((p) => ({ ...p, id_no: p.id_no.slice(0, -1) }));
+      return;
+    }
+    setForm((p) => {
+      const next = `${p.id_no}${value}`;
+      if (next.length > 50) return p;
+      return { ...p, id_no: next };
+    });
   }
 
   useEffect(() => {
@@ -605,6 +640,65 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady]);
 
+  async function savePatientRecord(
+    payload: PendingCreate["payload"],
+    dayYmd: string
+  ): Promise<"saved" | "offline" | "duplicate"> {
+    const idNo = payload.id_no.trim();
+    if (pendingHasSameIdOnDay(idNo, dayYmd)) return "duplicate";
+
+    if (typeof navigator !== "undefined" && navigator.onLine) {
+      try {
+        const dupOnDay = await listPatients({ id_no_exact: idNo, date: dayYmd });
+        if (dupOnDay.length > 0) return "duplicate";
+      } catch {
+        /* server unreachable — backend will enforce when online */
+      }
+    }
+
+    const requestId = crypto.randomUUID();
+    const recordedAt = recordedAtIsoFromYmd(dayYmd);
+
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      const next: PendingCreate[] = [
+        ...readPending(),
+        { id: requestId, payload, created_at: recordedAt },
+      ];
+      writePending(next);
+      setPendingCount(next.length);
+      return "offline";
+    }
+
+    try {
+      await createPatient({
+        id_no: payload.id_no,
+        sex: payload.sex,
+        age: payload.age,
+        room: payload.room,
+        ww: payload.ww,
+        lab: payload.lab,
+        burn: payload.burn,
+        notes: payload.notes || null,
+        client_request_id: requestId,
+        recorded_at: recordedAt,
+      });
+      return "saved";
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      if (isAlreadyRegisteredTodayError(msg)) return "duplicate";
+      if (e instanceof TypeError || !navigator.onLine) {
+        const next: PendingCreate[] = [
+          ...readPending(),
+          { id: requestId, payload, created_at: recordedAt },
+        ];
+        writePending(next);
+        setPendingCount(next.length);
+        return "offline";
+      }
+      throw e;
+    }
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -621,87 +715,37 @@ export default function Home() {
         return;
       }
 
-      if (pendingHasSameIdOnDay(idNo, caseDate)) {
-        showToast("error", "This ID is already saved for this date (pending offline list).");
+      const hasRange =
+        form.ageRange === "lt5" ||
+        form.ageRange === "5to14" ||
+        form.ageRange === "15to17" ||
+        form.ageRange === "gte18";
+      if (!hasRange) {
+        showToast("error", "Please select age range.");
         return;
       }
 
-      if (typeof navigator !== "undefined" && navigator.onLine) {
-        try {
-          const dupOnDay = await listPatients({ id_no_exact: idNo, date: caseDate });
-          if (dupOnDay.length > 0) {
-            showToast("error", "This ID number is already registered on this date.");
-            return;
-          }
-        } catch {
-          /* server unreachable — backend will enforce when online */
-        }
-      }
-
-      const ageRaw = form.age.trim();
-      if (!/^\d+$/.test(ageRaw)) {
-        showToast("error", "Age must be a valid number.");
-        return;
-      }
-      const ageNum = Number(ageRaw);
-      if (!Number.isFinite(ageNum) || ageNum < 0 || ageNum > 150) {
-        showToast("error", "Age must be between 0 and 150.");
-        return;
-      }
       const payload = {
         id_no: idNo,
         sex: form.sex as Sex,
-        age: ageNum,
+        age: rangeToAge(form.ageRange as AgeRange),
         room: form.room,
         ww: form.ww,
         lab: form.lab,
         burn: form.burn,
         notes: form.notes.trim(),
       };
-      const requestId = crypto.randomUUID();
-      const recordedAt = recordedAtIsoFromYmd(caseDate);
 
-      if (typeof window !== "undefined" && !navigator.onLine) {
-        const next: PendingCreate[] = [
-          ...readPending(),
-          { id: requestId, payload, created_at: recordedAt },
-        ];
-        writePending(next);
-        setPendingCount(next.length);
-        resetAddForm();
+      const result = await savePatientRecord(payload, caseDate);
+      if (result === "duplicate") {
+        showToast("error", "This ID number is already registered on this date.");
+        return;
+      }
+      resetAddForm();
+      if (result === "offline") {
         showToast("success", "Saved offline. Will sync when online.");
         return;
       }
-
-      try {
-        await createPatient({
-          id_no: payload.id_no,
-          sex: payload.sex,
-          age: payload.age,
-          room: payload.room,
-          ww: payload.ww,
-          lab: payload.lab,
-          burn: payload.burn,
-          notes: payload.notes || null,
-          client_request_id: requestId,
-          recorded_at: recordedAt,
-        });
-      } catch (e) {
-        // Network failure → queue for later
-        if (e instanceof TypeError || !navigator.onLine) {
-          const next: PendingCreate[] = [
-            ...readPending(),
-            { id: requestId, payload, created_at: recordedAt },
-          ];
-          writePending(next);
-          setPendingCount(next.length);
-          resetAddForm();
-          showToast("success", "Saved offline. Will sync when online.");
-          return;
-        }
-        throw e;
-      }
-      resetAddForm();
       await refresh();
       showToast("success", "Patient saved successfully.");
     } catch (err) {
@@ -767,7 +811,7 @@ export default function Home() {
           serial: idx + 1,
           patientId: p.id_no,
           gender: p.sex === "M" ? "Male" : "Female",
-          age: p.age,
+          age: ageRangeLabel(p.age),
           room: p.room,
           ww: p.ww ? "Yes" : "No",
           lab: p.lab ? "Yes" : "No",
@@ -1447,16 +1491,13 @@ export default function Home() {
                     placeholder="Numbers only"
                   />
                 </div>
-                <div>
-                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Age</label>
-                  <input
-                    value={pendingEditing.age}
-                    onChange={(e) =>
-                      setPendingEditing((p) => (p ? { ...p, age: e.target.value } : p))
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Age Range</label>
+                  <AgeRangeButtons
+                    value={pendingEditing.ageRange}
+                    onChange={(next) =>
+                      setPendingEditing((p) => (p ? { ...p, ageRange: next } : p))
                     }
-                    inputMode="numeric"
-                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
-                    placeholder="0 - 150"
                   />
                 </div>
                 <div>
@@ -1566,16 +1607,10 @@ export default function Home() {
                         showToast("error", "ID No must contain digits only.");
                         return;
                       }
-                      const ageRaw = pendingEditing.age.trim();
-                      if (!/^\d+$/.test(ageRaw)) {
-                        showToast("error", "Age must be a valid number.");
-                        return;
-                      }
-                      const ageNum = Number(ageRaw);
-                      if (!Number.isFinite(ageNum) || ageNum < 0 || ageNum > 150) {
-                        showToast("error", "Age must be between 0 and 150.");
-                        return;
-                      }
+                      const ageNum = resolveAgeForSave(
+                        pendingEditing.ageRange,
+                        pendingEditing.originalAge
+                      );
 
                       const items = readPending();
                       const idx = items.findIndex((x) => x.id === pendingEditing.id);
@@ -1698,7 +1733,7 @@ export default function Home() {
                           </td>
                           <td className="px-3 py-2 font-medium">{it.payload.id_no}</td>
                           <td className="px-3 py-2">{it.payload.sex}</td>
-                          <td className="px-3 py-2">{it.payload.age}</td>
+                          <td className="px-3 py-2">{ageRangeLabel(it.payload.age)}</td>
                         <td className="px-3 py-2">{it.payload.room}</td>
                           <td className="px-3 py-2">
                             <WarBoolCell value={it.payload.ww} />
@@ -1722,7 +1757,8 @@ export default function Home() {
                                     id: it.id,
                                     id_no: it.payload.id_no,
                                     sex: it.payload.sex,
-                                    age: String(it.payload.age),
+                                    ageRange: ageToRange(it.payload.age),
+                                    originalAge: it.payload.age,
                                     room: it.payload.room,
                                     ww: it.payload.ww,
                                     lab: it.payload.lab,
@@ -1795,16 +1831,13 @@ export default function Home() {
                     placeholder="ID NO"
                   />
                 </div>
-                <div>
+                <div className="col-span-2 sm:col-span-2">
                   <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                    Age
+                    Age Range
                   </label>
-                  <input
-                    value={editing.age}
-                    onChange={(e) => setEditing((p) => (p ? { ...p, age: e.target.value } : p))}
-                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
-                    placeholder="Age"
-                    inputMode="numeric"
+                  <AgeRangeButtons
+                    value={editing.ageRange}
+                    onChange={(next) => setEditing((p) => (p ? { ...p, ageRange: next } : p))}
                   />
                 </div>
                 <div>
@@ -1914,20 +1947,10 @@ export default function Home() {
                         showToast("error", "ID No must contain digits only.");
                         return;
                       }
-                      const ageRaw = editing.age.trim();
-                      if (!/^\d+$/.test(ageRaw)) {
-                        showToast("error", "Age must be a valid number.");
-                        return;
-                      }
-                      const ageNum = Number(ageRaw);
-                      if (!Number.isFinite(ageNum) || ageNum < 0 || ageNum > 150) {
-                        showToast("error", "Age must be between 0 and 150.");
-                        return;
-                      }
                       await updatePatient(editing.id, {
                         id_no: idNo,
                         sex: editing.sex,
-                        age: ageNum,
+                        age: resolveAgeForSave(editing.ageRange, editing.originalAge),
                         room: editing.room,
                         ww: editing.ww,
                         lab: editing.lab,
@@ -2110,6 +2133,102 @@ export default function Home() {
               <div className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200">
                 Add Patient
               </div>
+              <div className="mb-3 grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setEntryMode("manual")}
+                  className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                    entryMode === "manual"
+                      ? "border-slate-600 bg-slate-600 text-white"
+                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                  }`}
+                >
+                  Manual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEntryMode("scan")}
+                  className={`inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-xs font-semibold ${
+                    entryMode === "scan"
+                      ? "border-slate-600 bg-slate-600 text-white"
+                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                  }`}
+                >
+                  <Camera className="h-3.5 w-3.5" />
+                  Scan photo
+                </button>
+              </div>
+              {entryMode === "scan" ? (
+                <ScanLogSheet
+                  defaultDate={caseDate}
+                  getRegisteredIds={async (dateYmd) => {
+                    const ids: string[] = [];
+                    for (const p of readPending()) {
+                      if (p.payload.id_no.trim() && pendingHasSameIdOnDay(p.payload.id_no, dateYmd)) {
+                        ids.push(p.payload.id_no.trim());
+                      }
+                    }
+                    if (typeof navigator !== "undefined" && navigator.onLine) {
+                      try {
+                        const existing = await listPatients({ date: dateYmd });
+                        for (const row of existing) {
+                          const id = String(row.id_no ?? "").trim();
+                          if (id) ids.push(id);
+                        }
+                      } catch {
+                        /* offline check still uses pending */
+                      }
+                    }
+                    return ids;
+                  }}
+                  onImport={async (scanRows, dateYmd, room) => {
+                    let saved = 0;
+                    let offline = 0;
+                    let skipped = 0;
+                    let failed = 0;
+                    const seen = new Set<string>();
+                    for (const row of scanRows) {
+                      const id = row.id_no.trim();
+                      if (!id || seen.has(id)) {
+                        skipped += 1;
+                        continue;
+                      }
+                      seen.add(id);
+                      try {
+                        const result = await savePatientRecord(
+                          {
+                            id_no: id,
+                            sex: row.sex,
+                            age: row.age,
+                            room,
+                            ww: row.ww,
+                            lab: row.lab,
+                            burn: row.burn,
+                            notes: "",
+                          },
+                          dateYmd
+                        );
+                        if (result === "duplicate") skipped += 1;
+                        else if (result === "offline") offline += 1;
+                        else saved += 1;
+                      } catch {
+                        failed += 1;
+                      }
+                    }
+                    await refresh();
+                    const bits: string[] = [];
+                    if (saved) bits.push(`${saved} saved`);
+                    if (offline) bits.push(`${offline} saved offline`);
+                    if (skipped) bits.push(`${skipped} skipped (same-day ID)`);
+                    if (failed) bits.push(`${failed} failed`);
+                    showToast(
+                      failed && !saved && !offline ? "error" : "success",
+                      bits.join(" · ") || "No records imported."
+                    );
+                    return { saved, offline, skipped, failed };
+                  }}
+                />
+              ) : (
               <form onSubmit={onSubmit} className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
@@ -2125,53 +2244,19 @@ export default function Home() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                      ID NO
-                    </label>
-                    <input
-                      value={form.id_no}
-                      readOnly
-                      inputMode="none"
-                      autoComplete="off"
-                      onFocus={() => setKeypadTarget("id_no")}
-                      onTouchStart={(e) => {
-                        e.preventDefault();
-                        setKeypadTarget("id_no");
-                      }}
-                      className={`mt-1 w-full cursor-pointer rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
-                        keypadTarget === "id_no"
-                          ? "border-slate-500 dark:border-slate-500"
-                          : "border-zinc-200 dark:border-zinc-800"
-                      }`}
-                      placeholder="ID NO"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                      Age
-                    </label>
-                    <input
-                      value={form.age}
-                      readOnly
-                      inputMode="none"
-                      autoComplete="off"
-                      onFocus={() => setKeypadTarget("age")}
-                      onTouchStart={(e) => {
-                        e.preventDefault();
-                        setKeypadTarget("age");
-                      }}
-                      className={`mt-1 w-full cursor-pointer rounded-xl border bg-white px-3 py-2 text-sm outline-none shadow-sm dark:bg-zinc-950 ${
-                        keypadTarget === "age"
-                          ? "border-slate-500 dark:border-slate-500"
-                          : "border-zinc-200 dark:border-zinc-800"
-                      }`}
-                      placeholder="Age"
-                      required
-                    />
-                  </div>
+                <div>
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    ID NO
+                  </label>
+                  <input
+                    value={form.id_no}
+                    readOnly
+                    inputMode="none"
+                    autoComplete="off"
+                    className="mt-1 w-full cursor-pointer rounded-xl border border-slate-500 bg-white px-3 py-2 text-sm outline-none shadow-sm dark:border-slate-500 dark:bg-zinc-950"
+                    placeholder="ID NO"
+                    required
+                  />
                 </div>
 
                 <div className="grid grid-cols-3 gap-1">
@@ -2185,6 +2270,14 @@ export default function Home() {
                       {k}
                     </button>
                   ))}
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Age Range</label>
+                  <AgeRangeButtons
+                    value={form.ageRange}
+                    onChange={(next) => setForm((p) => ({ ...p, ageRange: next }))}
+                  />
                 </div>
 
                 <div>
@@ -2284,6 +2377,7 @@ export default function Home() {
                   {submitting ? "Saving..." : "Save"}
                 </button>
               </form>
+              )}
 
             </div>
 
@@ -2681,7 +2775,7 @@ export default function Home() {
                             </span>
                           </td>
                           <td className="px-2 py-2 align-top sm:px-4 sm:py-3 border-r border-zinc-200 dark:border-zinc-800">
-                            {p.age}
+                            {ageRangeLabel(p.age)}
                           </td>
                           <td className="w-[92px] px-2 py-2 align-top sm:px-4 sm:py-3 border-r border-zinc-200 dark:border-zinc-800">
                             <span className="inline-flex rounded-md bg-zinc-100 px-2 py-0.5 text-xs font-semibold text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100">
@@ -2720,7 +2814,8 @@ export default function Home() {
                                     id: p.id,
                                     id_no: p.id_no ?? "",
                                     sex: p.sex,
-                                    age: String(p.age ?? ""),
+                                    ageRange: ageToRange(Number(p.age ?? 0)),
+                                    originalAge: Number(p.age ?? 0),
                                     room: (p.room ?? "room1") as "room1" | "room2",
                                     ww: Boolean(p.ww),
                                     lab: Boolean(p.lab),
