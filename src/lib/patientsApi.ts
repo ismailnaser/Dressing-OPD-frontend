@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "./config";
 import { apiFetch } from "./http";
 import { humanizeApiErrorText } from "./apiErrors";
+import { cachedFetch, invalidateCache } from "./queryCache";
 
 export type Sex = "M" | "F";
 
@@ -43,16 +44,29 @@ function toQueryString(filters: PatientFilters) {
   return qs ? `?${qs}` : "";
 }
 
-export async function listPatients(filters: PatientFilters) {
-  const res = await apiFetch(`${API_BASE_URL}/patients${toQueryString(filters)}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Request failed (${res.status})`);
-  }
-  const json = (await res.json()) as { data: Patient[] };
-  return json.data;
+const LIST_TTL_MS = 8_000;
+const COUNT_TTL_MS = 20_000;
+
+export function invalidatePatientQueries() {
+  invalidateCache("patients:");
+}
+
+export async function listPatients(filters: PatientFilters, options?: { fresh?: boolean }) {
+  const skipCache = Boolean(options?.fresh || filters.id_no_exact);
+  const key = `patients:list:${toQueryString(filters)}`;
+  const load = async () => {
+    const res = await apiFetch(`${API_BASE_URL}/patients${toQueryString(filters)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Request failed (${res.status})`);
+    }
+    const json = (await res.json()) as { data: Patient[] };
+    return json.data;
+  };
+  if (skipCache) return load();
+  return cachedFetch(key, LIST_TTL_MS, load);
 }
 
 export async function createPatient(input: {
@@ -90,6 +104,7 @@ export async function createPatient(input: {
     try {
       const j = JSON.parse(text) as { data?: Patient; message?: string };
       if (j?.data && typeof j.data === "object" && "id" in j.data) {
+        invalidatePatientQueries();
         return j.data;
       }
     } catch {
@@ -102,6 +117,7 @@ export async function createPatient(input: {
     throw new Error(errorMessageFromResponseBody(text, `Request failed (${res.status})`));
   }
   const json = (await res.json()) as { data: Patient };
+  invalidatePatientQueries();
   return json.data;
 }
 
@@ -118,13 +134,15 @@ export async function exportPatientsExcel(filters: PatientFilters) {
 }
 
 export async function getPatientsCount() {
-  const res = await apiFetch(`${API_BASE_URL}/patients/count`, { cache: "no-store" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Request failed (${res.status})`);
-  }
-  const json = (await res.json()) as { count: number };
-  return json.count;
+  return cachedFetch("patients:count", COUNT_TTL_MS, async () => {
+    const res = await apiFetch(`${API_BASE_URL}/patients/count`, { cache: "no-store" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Request failed (${res.status})`);
+    }
+    const json = (await res.json()) as { count: number };
+    return json.count;
+  });
 }
 
 export async function updatePatient(
@@ -150,6 +168,7 @@ export async function updatePatient(
     throw new Error(errorMessageFromResponseBody(text, `Request failed (${res.status})`));
   }
   const json = (await res.json()) as { data: Patient };
+  invalidatePatientQueries();
   return json.data;
 }
 
@@ -161,6 +180,7 @@ export async function deletePatient(id: number) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `Request failed (${res.status})`);
   }
+  invalidatePatientQueries();
 }
 
 export type PatientAuditLog = {

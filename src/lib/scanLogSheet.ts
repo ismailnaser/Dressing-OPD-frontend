@@ -21,7 +21,150 @@ export type ScanResult = {
   entries: ScannedEntry[];
 };
 
+export type ScanFailCode =
+  | "timeout"
+  | "network"
+  | "session"
+  | "unsupported"
+  | "too_large"
+  | "busy"
+  | "unavailable"
+  | "empty"
+  | "unclear";
+
+export type ScanFailureInfo = {
+  title: string;
+  message: string;
+  hint: string;
+};
+
+export class ScanFailedError extends Error {
+  readonly code: ScanFailCode;
+
+  constructor(code: ScanFailCode, message?: string) {
+    super(message ?? code);
+    this.name = "ScanFailedError";
+    this.code = code;
+  }
+}
+
 type ProgressFn = (percent: number, status: string) => void;
+
+const SCAN_FAILURE_COPY: Record<ScanFailCode, ScanFailureInfo> = {
+  timeout: {
+    title: "Analysis timed out",
+    message: "The photo was sent, but the analysis did not finish in time.",
+    hint: "Try again with a closer, clearer photo of the sheet.",
+  },
+  network: {
+    title: "Connection problem",
+    message: "The scan could not reach the server, so the records were not filled.",
+    hint: "Check your internet connection, then try the same photo again.",
+  },
+  session: {
+    title: "Session expired",
+    message: "You need to sign in again before scanning.",
+    hint: "Sign in, then take or choose the photo again.",
+  },
+  unsupported: {
+    title: "Photo not accepted",
+    message: "This file is not a supported image for scanning.",
+    hint: "Use a JPEG or PNG photo of the log sheet.",
+  },
+  too_large: {
+    title: "Photo too large",
+    message: "The image is larger than the scan allows.",
+    hint: "Take a new photo and try again.",
+  },
+  busy: {
+    title: "Scan service is busy",
+    message: "Too many scan requests were sent at once.",
+    hint: "Wait a few seconds, then retry the same photo.",
+  },
+  unavailable: {
+    title: "Scan is not available",
+    message: "The analysis service is not ready right now.",
+    hint: "Try again later. If this continues, ask an administrator.",
+  },
+  empty: {
+    title: "No records found",
+    message: "The photo was processed, but no patient IDs could be read.",
+    hint: "Make sure the full sheet is in frame, well lit, and not blurry, then try again.",
+  },
+  unclear: {
+    title: "Analysis did not complete",
+    message: "The scan could not fill the records from this photo.",
+    hint: "Try a clearer, closer photo of the sheet.",
+  },
+};
+
+function classifyScanMessage(raw: string): ScanFailCode {
+  const t = raw.toLowerCase();
+  if (!t.trim()) return "unclear";
+  if (t.includes("timed out") || t.includes("timeout") || t.includes("abort")) return "timeout";
+  if (
+    t.includes("failed to fetch") ||
+    t.includes("network") ||
+    t.includes("cut off") ||
+    t.includes("load failed") ||
+    t.includes("offline")
+  ) {
+    return "network";
+  }
+  if (t.includes("unauthenticated") || t.includes("session") || t.includes("sign in") || t.includes("unauthorized")) {
+    return "session";
+  }
+  if (t.includes("mimes") || t.includes("file of type") || t.includes("supported image")) return "unsupported";
+  if (t.includes("too large") || t.includes("greater than") || t.includes("kilobytes")) return "too_large";
+  if (t.includes("busy") || t.includes("rate limit") || t.includes("quota") || t.includes("429")) return "busy";
+  if (
+    t.includes("not available") ||
+    t.includes("api key") ||
+    t.includes(".env") ||
+    t.includes("gemini") ||
+    t.includes("openai")
+  ) {
+    return "unavailable";
+  }
+  if (
+    t.includes("no records") ||
+    t.includes("no patient") ||
+    t.includes("empty reading") ||
+    t.includes("could not read the sheet") ||
+    t.includes("clearer photo")
+  ) {
+    return "empty";
+  }
+  return "unclear";
+}
+
+function scanErrorFromHttp(status: number, body: string): ScanFailedError {
+  if (status === 401 || status === 419) return new ScanFailedError("session");
+  if (status === 413) return new ScanFailedError("too_large");
+  if (status === 429) return new ScanFailedError("busy");
+  if (status === 502 || status === 503 || status === 504) return new ScanFailedError("unavailable");
+
+  const msg = humanizeApiErrorText(body, "");
+  const classified = classifyScanMessage(msg || body);
+  if (classified !== "unclear") return new ScanFailedError(classified, msg || undefined);
+
+  if (status === 422) {
+    const t = `${msg} ${body}`.toLowerCase();
+    if (/mimes|file of type|jpeg|png|webp/.test(t)) return new ScanFailedError("unsupported");
+    if (/greater than|kilobytes|too large/.test(t)) return new ScanFailedError("too_large");
+  }
+
+  return new ScanFailedError("unclear");
+}
+
+export function explainScanFailure(err: unknown): ScanFailureInfo {
+  const code = err instanceof ScanFailedError ? err.code : classifyScanMessage(err instanceof Error ? err.message : String(err ?? ""));
+  return SCAN_FAILURE_COPY[code];
+}
+
+export function hasReadableScanRecords(entries: ScannedEntry[]): boolean {
+  return entries.some((e) => /^\d{3}$/.test(e.id_no.trim()));
+}
 
 const TOTAL_ROWS = 60;
 
@@ -114,13 +257,13 @@ async function compressToJpeg(file: Blob, onProgress?: ProgressFn): Promise<Blob
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     bitmap.close();
-    throw new Error("Canvas is not available.");
+    throw new ScanFailedError("unclear");
   }
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Could not compress the photo."))),
+      (b) => (b ? resolve(b) : reject(new ScanFailedError("unclear"))),
       "image/jpeg",
       0.84
     );
@@ -129,7 +272,13 @@ async function compressToJpeg(file: Blob, onProgress?: ProgressFn): Promise<Blob
 }
 
 export async function recognizeDressingLog(file: Blob, onProgress?: ProgressFn): Promise<ScanResult> {
-  const jpeg = await compressToJpeg(file, onProgress);
+  let jpeg: Blob;
+  try {
+    jpeg = await compressToJpeg(file, onProgress);
+  } catch (e) {
+    if (e instanceof ScanFailedError) throw e;
+    throw new ScanFailedError("unclear");
+  }
   onProgress?.(22, "AI is reading the sheet…");
 
   const body = new FormData();
@@ -146,24 +295,31 @@ export async function recognizeDressingLog(file: Blob, onProgress?: ProgressFn):
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      throw new Error("AI reading timed out. Retry with the same photo.");
+      throw new ScanFailedError("timeout");
     }
     if (e instanceof TypeError) {
-      throw new Error("AI reading was cut off. Retry with the same photo.");
+      throw new ScanFailedError("network");
     }
-    throw e;
+    throw e instanceof ScanFailedError
+      ? e
+      : new ScanFailedError(classifyScanMessage(e instanceof Error ? e.message : String(e ?? "")));
   } finally {
     window.clearTimeout(timer);
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(humanizeApiErrorText(text, `Scan failed (${res.status})`));
+    throw scanErrorFromHttp(res.status, text);
   }
 
   onProgress?.(88, "Filling 60 rows…");
-  const json = (await res.json()) as {
-    data?: { date?: string | null; entries?: Array<Record<string, unknown>> };
-  };
+  let json: { data?: { date?: string | null; entries?: Array<Record<string, unknown>> } };
+  try {
+    json = (await res.json()) as {
+      data?: { date?: string | null; entries?: Array<Record<string, unknown>> };
+    };
+  } catch {
+    throw new ScanFailedError("unclear");
+  }
   const payload = json.data ?? {};
   const dateRaw = typeof payload.date === "string" ? payload.date : "";
   const byNo = new Map<number, ScannedEntry>();
@@ -173,6 +329,9 @@ export async function recognizeDressingLog(file: Blob, onProgress?: ProgressFn):
     byNo.set(no, mapEntry(row, no));
   }
   const entries = Array.from({ length: TOTAL_ROWS }, (_, i) => byNo.get(i + 1) ?? emptyEntry(i + 1));
+  if (!hasReadableScanRecords(entries)) {
+    throw new ScanFailedError("empty");
+  }
   onProgress?.(100, "Done");
   return {
     dateRaw,

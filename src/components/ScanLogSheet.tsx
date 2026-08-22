@@ -1,9 +1,9 @@
 "use client";
 
-import { Camera, ImagePlus, Loader2 } from "lucide-react";
+import { Camera, CircleAlert, ImagePlus, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AGE_RANGE_OPTIONS, ageToRange, resolveAgeForSave, type AgeRange } from "@/lib/ageRange";
-import { blankSixtyEntries, recognizeDressingLog, type ScannedEntry } from "@/lib/scanLogSheet";
+import { explainScanFailure, recognizeDressingLog, type ScanFailureInfo, type ScannedEntry } from "@/lib/scanLogSheet";
 import type { Sex } from "@/lib/patientsApi";
 
 export type ScanImportRow = {
@@ -116,6 +116,8 @@ export function ScanLogSheet({
   const [importProgress, setImportProgress] = useState("");
   const [scanFile, setScanFile] = useState<File | null>(null);
   const [photoZoom, setPhotoZoom] = useState(1);
+  const [failOpen, setFailOpen] = useState(false);
+  const [failInfo, setFailInfo] = useState<ScanFailureInfo | null>(null);
 
   function rowsFromEntries(entries: ScannedEntry[]): ReviewRow[] {
     return entries.map((e) => ({
@@ -179,6 +181,11 @@ export function ScanLogSheet({
     return out;
   }
 
+  function showScanFailure(e: unknown) {
+    setFailInfo(explainScanFailure(e));
+    setFailOpen(true);
+  }
+
   async function applyAiResult(file: File) {
     const result = await recognizeDressingLog(file, (pct, status) => setProgress({ pct, status }));
     const dateYmd = result.dateYmd || defaultDate;
@@ -190,6 +197,7 @@ export function ScanLogSheet({
   async function onPickFile(file: File | undefined) {
     if (!file) return;
     setError(null);
+    setFailOpen(false);
     setBusy(true);
     setProgress({ pct: 4, status: "Sending photo to AI…" });
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -200,15 +208,7 @@ export function ScanLogSheet({
       await applyAiResult(file);
       setReviewOpen(true);
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : "AI could not read the photo."
-      );
-      const annotated = await annotateDuplicates(rowsFromEntries(blankSixtyEntries()), defaultDate, "init");
-      setRows(annotated);
-      setCaseDate(defaultDate);
-      setReviewOpen(true);
+      showScanFailure(e);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -224,8 +224,10 @@ export function ScanLogSheet({
     setProgress({ pct: 8, status: "AI is filling the 60 rows…" });
     try {
       await applyAiResult(scanFile);
+      setFailOpen(false);
+      setReviewOpen(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "AI could not read the photo.");
+      showScanFailure(e);
     } finally {
       setBusy(false);
       setProgress(null);
@@ -352,6 +354,62 @@ export function ScanLogSheet({
       {error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100">
           {error}
+        </div>
+      ) : null}
+
+      {failOpen && failInfo ? (
+        <div
+          className="fixed inset-0 z-80 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="scan-fail-title"
+          aria-describedby="scan-fail-message"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/45"
+            onClick={() => !busy && setFailOpen(false)}
+            aria-label="Close"
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mb-3 flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
+                <CircleAlert className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 id="scan-fail-title" className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                  {failInfo.title}
+                </h2>
+                <p id="scan-fail-message" className="mt-1 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  {failInfo.message}
+                </p>
+                <p className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                  {failInfo.hint}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setFailOpen(false)}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950"
+              >
+                Close
+              </button>
+              {scanFile ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void fillWithAi()}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                >
+                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {busy ? "Analyzing…" : "Retry same photo"}
+                </button>
+              ) : null}
+            </div>
+          </div>
         </div>
       ) : null}
 
