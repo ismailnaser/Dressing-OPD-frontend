@@ -28,6 +28,7 @@ export type ScanFailCode =
   | "unsupported"
   | "too_large"
   | "busy"
+  | "quota"
   | "unavailable"
   | "empty"
   | "unclear";
@@ -81,6 +82,11 @@ const SCAN_FAILURE_COPY: Record<ScanFailCode, ScanFailureInfo> = {
     message: "Too many scan requests were sent at once.",
     hint: "Wait a few seconds, then retry the same photo.",
   },
+  quota: {
+    title: "Daily scan limit reached",
+    message: "Today's free photo scans for the AI service are all used up.",
+    hint: "Enter these records with Manual entry. Scanning works again tomorrow, or an administrator can raise the limit.",
+  },
   unavailable: {
     title: "Scan is not available",
     message: "The analysis service is not ready right now.",
@@ -116,6 +122,9 @@ function classifyScanMessage(raw: string): ScanFailCode {
   }
   if (t.includes("mimes") || t.includes("file of type") || t.includes("supported image")) return "unsupported";
   if (t.includes("too large") || t.includes("greater than") || t.includes("kilobytes")) return "too_large";
+  if (t.includes("daily free limit") || t.includes("daily limit") || t.includes("resets tomorrow")) {
+    return "quota";
+  }
   if (t.includes("busy") || t.includes("rate limit") || t.includes("quota") || t.includes("429")) return "busy";
   if (
     t.includes("not available") ||

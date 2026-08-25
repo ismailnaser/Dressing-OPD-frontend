@@ -171,7 +171,7 @@ describe("scanLogSheet helpers", () => {
   });
 
   it("explains every scan failure code for usability", () => {
-    const codes = ["timeout", "network", "session", "unsupported", "too_large", "busy", "unavailable", "empty", "unclear"] as const;
+    const codes = ["timeout", "network", "session", "unsupported", "too_large", "busy", "quota", "unavailable", "empty", "unclear"] as const;
     for (const code of codes) {
       const copy = explainScanFailure(new ScanFailedError(code));
       expect(copy.title.length).toBeGreaterThan(3);
@@ -180,6 +180,17 @@ describe("scanLogSheet helpers", () => {
     }
     expect(explainScanFailure(new Error("unauthenticated")).title).toMatch(/session/i);
     expect(explainScanFailure(new Error("failed to fetch")).title).toMatch(/connection/i);
+  });
+
+  it("separates a used-up daily quota from a momentary rate limit", () => {
+    const daily = explainScanFailure(
+      new Error("The daily free limit for photo scanning is used up. It resets tomorrow.")
+    );
+    expect(daily.title).toMatch(/daily/i);
+    expect(daily.hint).toMatch(/manual/i);
+
+    const momentary = explainScanFailure(new Error("The scan service is busy. Wait a moment and try again."));
+    expect(momentary.title).toMatch(/busy/i);
   });
 });
 

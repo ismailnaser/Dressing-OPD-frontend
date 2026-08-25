@@ -11,6 +11,7 @@ const SCAN_CODES: ScanFailCode[] = [
   "unsupported",
   "too_large",
   "busy",
+  "quota",
   "unavailable",
   "empty",
   "unclear",
