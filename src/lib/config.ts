@@ -11,17 +11,23 @@ function normalizeApiUrl(v: string): string {
 }
 
 export const API_BASE_URL = (() => {
-  // Runtime override for static deployments (no rebuild needed).
+  const env = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
+  const envUrl = typeof env === "string" && env.trim() ? normalizeApiUrl(env) : "";
+
   if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    const isLocal = host === "localhost" || host === "127.0.0.1";
+    // Local dev always uses .env.local / localhost — never the production runtime URL.
+    if (isLocal) {
+      return envUrl || "http://127.0.0.1:8000/api";
+    }
+
     const w = window.__LAMA_API_URL__;
     if (typeof w === "string" && w.trim()) return normalizeApiUrl(w);
   }
 
-  // Build-time env (works when you rebuild with NEXT_PUBLIC_API_URL set).
-  const env = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL;
-  if (typeof env === "string" && env.trim()) return normalizeApiUrl(env);
+  if (envUrl) return envUrl;
 
-  // Local dev fallback.
   return "http://127.0.0.1:8000/api";
 })();
 

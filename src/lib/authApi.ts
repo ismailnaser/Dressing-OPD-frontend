@@ -12,7 +12,7 @@ export async function login(username: string, password: string, rememberMe = fal
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(humanizeApiErrorText(text, `Login failed (${res.status})`));
+    throw new Error(humanizeApiErrorText(text, `Login failed (${res.status})`, res.status));
   }
 
   const json = (await res.json()) as { token: string; user: AuthUser };

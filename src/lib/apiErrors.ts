@@ -29,13 +29,16 @@ function flattenLaravelErrors(errors: unknown): string[] {
 /**
  * Turn Laravel/JSON error bodies into short, user-friendly text.
  */
-export function humanizeApiErrorText(text: string, fallback: string): string {
+export function humanizeApiErrorText(text: string, fallback: string, status?: number): string {
   const raw = text.trim();
+  if (status === 429 || /too many requests/i.test(raw)) {
+    return "Too many attempts. Please wait a minute and try again.";
+  }
   if (!raw) return fallback;
+  if (/^\s*</.test(raw) || /<!DOCTYPE/i.test(raw)) return fallback;
 
   const j = tryParseJsonObject(raw);
   if (!j) {
-    // Strip accidental JSON-ish noise if it's HTML wrapped
     if (raw.length > 240) return `${raw.slice(0, 240)}…`;
     return raw;
   }
