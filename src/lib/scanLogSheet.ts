@@ -183,8 +183,71 @@ function todayYmdLocal() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+const MONTH_NAME_TO_NUM: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+function isRealYmd(ymd: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const dt = new Date(Date.UTC(y, month - 1, day));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+
+function clampSheetYmd(ymd: string, today: string): string | null {
+  if (!isRealYmd(ymd)) return null;
+  if (ymd > today) return today;
+  return ymd;
+}
+
 export function parseSheetDate(text: string, today = todayYmdLocal()): string | null {
-  const t = text.replace(/[.\-]/g, "/");
+  const raw = text.trim();
+  if (!raw) return null;
+
+  const iso = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return clampSheetYmd(`${iso[1]}-${iso[2]}-${iso[3]}`, today);
+
+  const named = raw.match(
+    /\b(\d{1,2})\s*[\/.\-\s]\s*([A-Za-z]{3,9})\s*[\/.\-\s,]?\s*(\d{2,4})?\b/
+  );
+  if (named) {
+    const month = MONTH_NAME_TO_NUM[named[2].toLowerCase()];
+    if (month) {
+      const day = Number(named[1]);
+      let year = named[3] ? Number(named[3]) : new Date(`${today}T12:00:00`).getFullYear();
+      if (year < 100) year += 2000;
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return clampSheetYmd(`${year}-${pad(month)}-${pad(day)}`, today);
+    }
+  }
+
+  const t = raw.replace(/[.\-]/g, "/");
   const m =
     t.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{2,4})\b/) ??
     t.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\b/);
@@ -200,8 +263,7 @@ export function parseSheetDate(text: string, today = todayYmdLocal()): string | 
   const pad = (n: number) => String(n).padStart(2, "0");
   let ymd = `${year}-${pad(month)}-${pad(day)}`;
   if (!m[3] && ymd > today) ymd = `${year - 1}-${pad(month)}-${pad(day)}`;
-  if (ymd > today) return today;
-  return ymd;
+  return clampSheetYmd(ymd, today);
 }
 
 function emptyEntry(rowNo: number): ScannedEntry {

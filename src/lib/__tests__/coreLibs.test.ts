@@ -10,6 +10,7 @@ import {
 import { humanizeApiErrorText } from "../apiErrors";
 import { getAuthToken, setAuthToken, getRememberedUsername, setRememberedUsername } from "../auth";
 import { flushPendingList, isAlreadyRegisteredTodayError, ymdFromIso } from "../pendingSync";
+import { formatYmdDisplay, ymdInClinicTz } from "../clinicDate";
 import { createPatient } from "../patientsApi";
 import {
   blankSixtyEntries,
@@ -107,8 +108,11 @@ describe("pendingSync", () => {
     expect(isAlreadyRegisteredTodayError("This ID number is already registered on this date.")).toBe(true);
     expect(isAlreadyRegisteredTodayError("already registered today")).toBe(true);
     expect(isAlreadyRegisteredTodayError("server down")).toBe(false);
-    expect(ymdFromIso("2026-08-22T15:04:00")).toBe("2026-08-22");
+    expect(ymdFromIso("2026-08-22T15:04:00Z")).toBe("2026-08-22");
+    expect(ymdFromIso("2026-09-02T22:00:00.000Z")).toBe("2026-09-03");
     expect(ymdFromIso("bad")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(ymdInClinicTz("2026-09-02T12:00:00.000Z")).toBe("2026-09-02");
+    expect(formatYmdDisplay("2026-09-02")).toBe("02/09/2026");
   });
 
   it("flushes pending rows and keeps retries", async () => {
@@ -158,6 +162,9 @@ describe("scanLogSheet helpers", () => {
     expect(parseSheetDate("13/8", "2026-08-22")).toBe("2026-08-13");
     expect(parseSheetDate("40/1", "2026-08-22")).toBeNull();
     expect(parseSheetDate("no date", "2026-08-22")).toBeNull();
+    expect(parseSheetDate("2026-09-02", "2026-09-03")).toBe("2026-09-02");
+    expect(parseSheetDate("1/SEPTEMBER/2026", "2026-09-03")).toBe("2026-09-01");
+    expect(parseSheetDate("2 September 2026", "2026-09-03")).toBe("2026-09-02");
   });
 
   it("requires a readable 3-digit ID among 60 rows", () => {

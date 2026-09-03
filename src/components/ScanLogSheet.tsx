@@ -3,6 +3,8 @@
 import { Camera, CircleAlert, ImagePlus, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AGE_RANGE_OPTIONS, ageToRange, resolveAgeForSave, type AgeRange } from "@/lib/ageRange";
+import { formatYmdDisplay, isYmd, todayYmdClinic } from "@/lib/clinicDate";
+import { DateYmdField } from "@/components/DateYmdField";
 import { explainScanFailure, recognizeDressingLog, type ScanFailureInfo, type ScannedEntry } from "@/lib/scanLogSheet";
 import type { Sex } from "@/lib/patientsApi";
 
@@ -41,9 +43,7 @@ const fieldClass =
   "w-full rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600";
 
 function todayYmd() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return todayYmdClinic();
 }
 
 function CompactAgeButtons({
@@ -147,9 +147,11 @@ export function ScanLogSheet({
     dateYmd: string,
     mode: "init" | "keep"
   ): Promise<ReviewRow[]> {
+    const day = isYmd(dateYmd) ? dateYmd : defaultDate;
+    const dateLabel = formatYmdDisplay(day);
     let registered = new Set<string>();
     try {
-      registered = new Set((await getRegisteredIds(dateYmd)).map((id) => id.trim()));
+      registered = new Set((await getRegisteredIds(day)).map((id) => id.trim()));
     } catch {
       registered = new Set();
     }
@@ -162,7 +164,9 @@ export function ScanLogSheet({
       if (id) {
         if (seen.has(id) || registered.has(id)) {
           duplicate = true;
-          note = seen.has(id) ? "Duplicate ID on this sheet" : "Already registered on this date";
+          note = seen.has(id)
+            ? "Duplicate ID on this sheet"
+            : `Already registered on ${dateLabel}`;
         } else {
           seen.add(id);
         }
@@ -188,7 +192,10 @@ export function ScanLogSheet({
 
   async function applyAiResult(file: File) {
     const result = await recognizeDressingLog(file, (pct, status) => setProgress({ pct, status }));
-    const dateYmd = result.dateYmd || defaultDate;
+    // Keep the date the user chose (form default / picker). Do not replace it with
+    // the sheet header date — that is often a previous day and caused false
+    // "already registered" flags.
+    const dateYmd = isYmd(caseDate) ? caseDate : result.dateYmd || defaultDate;
     setCaseDate(dateYmd);
     const annotated = await annotateDuplicates(rowsFromEntries(result.entries), dateYmd, "init");
     setRows(annotated);
@@ -457,16 +464,12 @@ export function ScanLogSheet({
             </p>
 
             <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                Case date
-                <input
-                  type="date"
-                  value={caseDate}
-                  max={today}
-                  onChange={(e) => void onChangeDate(e.target.value)}
-                  className={`mt-1 ${fieldClass}`}
-                />
-              </label>
+              <DateYmdField
+                label="Case date"
+                value={caseDate}
+                max={today}
+                onChange={(next) => void onChangeDate(next)}
+              />
               <div className="flex items-end">
                 <button
                   type="button"
@@ -579,7 +582,14 @@ export function ScanLogSheet({
                             patchRow(r.key, {
                               id_no,
                               duplicate: false,
-                              selected: isThreeDigitId(id_no) && !r.duplicate,
+                              note: "",
+                              selected: isThreeDigitId(id_no),
+                            });
+                          }}
+                          onBlur={() => {
+                            setRows((prev) => {
+                              void annotateDuplicates(prev, caseDate, "keep").then(setRows);
+                              return prev;
                             });
                           }}
                           className={fieldClass}

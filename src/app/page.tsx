@@ -46,16 +46,16 @@ import {
   type AgeRange,
 } from "@/lib/ageRange";
 import { ScanLogSheet } from "@/components/ScanLogSheet";
+import { DateYmdField } from "@/components/DateYmdField";
+import { CLINIC_TIMEZONE, isYmd, todayYmdClinic, ymdInClinicTz } from "@/lib/clinicDate";
 
 function todayYmd() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return todayYmdClinic();
 }
 
 function recordedAtIsoFromYmd(ymd: string): string {
   const today = todayYmd();
-  const safe = /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : today;
+  const safe = isYmd(ymd) ? ymd.trim() : today;
   if (safe >= today) return new Date().toISOString();
   return `${safe}T12:00:00.000Z`;
 }
@@ -229,28 +229,26 @@ function writePending(items: PendingCreate[]) {
   localStorage.setItem(PENDING_KEY, JSON.stringify(items));
 }
 
-/** Same calendar day (local), same trimmed id — blocks duplicate offline rows. */
+/** Same clinic calendar day, same trimmed id — blocks duplicate offline rows. */
 function pendingHasSameIdOnDay(idNo: string, dayYmd: string): boolean {
   const target = idNo.trim();
+  const day = isYmd(dayYmd) ? dayYmd.trim() : todayYmd();
   for (const p of readPending()) {
     if (p.payload.id_no.trim() !== target) continue;
-    const d = new Date(p.created_at);
-    if (isNaN(d.getTime())) continue;
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    if (`${y}-${m}-${dd}` === dayYmd) return true;
+    if (ymdInClinicTz(p.created_at) === day) return true;
   }
   return false;
 }
 
 function formatDayMonthWordYear(isoLike: string) {
-  const dt = new Date(isoLike);
+  const raw = isoLike.trim();
+  const ymd = isYmd(raw) ? raw : ymdInClinicTz(raw);
+  if (!isYmd(ymd)) return "";
+  const [year, month, day] = ymd.split("-");
+  const dt = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12));
   if (isNaN(dt.getTime())) return "";
-  const day = String(dt.getDate()); // no leading zero
-  const month = enMonth.format(dt).toUpperCase();
-  const year = String(dt.getFullYear());
-  return `${day}/${month}/${year}`;
+  const monthName = enMonth.format(dt).toUpperCase();
+  return `${Number(day)}/${monthName}/${year}`;
 }
 
 export default function Home() {
@@ -800,13 +798,16 @@ export default function Home() {
           ? `${effectiveFilters.from_date}_to_${effectiveFilters.to_date}`
           : todayYmd());
       const exportRows = sortedPatients.map((p, idx) => {
+        const createdDate = p.created_at ? ymdInClinicTz(p.created_at) : "-";
         const dt = new Date(p.created_at);
-        const createdDate = isNaN(dt.getTime())
-          ? "-"
-          : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
         const createdTime = isNaN(dt.getTime())
           ? "-"
-          : `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+          : new Intl.DateTimeFormat("en-GB", {
+              timeZone: CLINIC_TIMEZONE,
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            }).format(dt);
         return {
           serial: idx + 1,
           patientId: p.id_no,
@@ -2162,18 +2163,21 @@ export default function Home() {
                 <ScanLogSheet
                   defaultDate={caseDate}
                   getRegisteredIds={async (dateYmd) => {
+                    const day = isYmd(dateYmd) ? dateYmd.trim() : todayYmd();
                     const ids: string[] = [];
                     for (const p of readPending()) {
-                      if (p.payload.id_no.trim() && pendingHasSameIdOnDay(p.payload.id_no, dateYmd)) {
+                      if (p.payload.id_no.trim() && pendingHasSameIdOnDay(p.payload.id_no, day)) {
                         ids.push(p.payload.id_no.trim());
                       }
                     }
                     if (typeof navigator !== "undefined" && navigator.onLine) {
                       try {
-                        const existing = await listPatients({ date: dateYmd });
+                        const existing = await listPatients({ date: day }, { fresh: true });
                         for (const row of existing) {
                           const id = String(row.id_no ?? "").trim();
-                          if (id) ids.push(id);
+                          if (!id) continue;
+                          if (row.created_at && ymdInClinicTz(row.created_at) !== day) continue;
+                          ids.push(id);
                         }
                       } catch {
                         /* offline check still uses pending */
@@ -2231,16 +2235,12 @@ export default function Home() {
               ) : (
               <form onSubmit={onSubmit} className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-                    Case date
-                  </label>
-                  <input
-                    type="date"
+                  <DateYmdField
+                    label="Case date"
                     value={caseDate}
                     max={todayYmd()}
-                    onChange={(e) => setCaseDate(e.target.value || todayYmd())}
-                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none shadow-sm focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:focus:border-zinc-600"
-                    title="Case date"
+                    onChange={(next) => setCaseDate(next || todayYmd())}
+                    className="text-xs font-medium text-zinc-600 dark:text-zinc-400"
                   />
                 </div>
 

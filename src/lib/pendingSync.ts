@@ -1,4 +1,5 @@
-import { createPatient, listPatients, type PatientFilters, type Sex } from "./patientsApi";
+import { createPatient, listPatients, type Sex } from "./patientsApi";
+import { ymdInClinicTz } from "./clinicDate";
 
 export type PendingSyncMeta = {
   id: string;
@@ -17,21 +18,12 @@ export type NursePendingPayload = {
 };
 
 export function ymdFromIso(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return todayYmdLocal();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function todayYmdLocal() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return ymdInClinicTz(iso);
 }
 
 export function isAlreadyRegisteredTodayError(message: string): boolean {
   const m = message.toLowerCase();
-  return m.includes("already registered today") || m.includes("already registered on this date");
+  return m.includes("already registered today") || m.includes("already registered on");
 }
 
 /** True if this ID already exists on the server for the pending row's calendar day. */

@@ -18,6 +18,7 @@ import { createUser, deleteUser, listUsers, updateUser, type AdminUserRow } from
 import { isDoctorRole, isSectionAdmin } from "@/lib/roleRouting";
 import { exportStyledExcel } from "@/lib/excelExport";
 import { flushPendingList } from "@/lib/pendingSync";
+import { todayYmdClinic } from "@/lib/clinicDate";
 import { Download, LogOut, Moon, Plus, Shield, Sun } from "lucide-react";
 
 type Disposition = "discharged" | "admitted" | "referred_ed" | "referred_out";
@@ -183,8 +184,7 @@ function pad2(n: number) {
 }
 
 function todayYmd() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  return todayYmdClinic();
 }
 
 function recordedAtIsoFromYmd(ymd: string): string {
